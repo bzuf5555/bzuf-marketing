@@ -1,7 +1,21 @@
 # CLAUDE.md — BzUF Marketing Telegram Bot
 
 ## Loyiha haqida
-Telegram bot: foydalanuvchi rasm yuboradi → Gemini Vision tahlil qiladi → Uzum, Olcha, OLX da qidiradi → natija qaytaradi.
+Telegram bot: foydalanuvchi rasm yuboradi → Gemini Vision tahlil qiladi → O'zbekistondagi BARCHA 10 ta marketplace da parallel qidiradi → natija qaytaradi.
+
+**Qidiruv marketlari:**
+| Market | Manba | Ikon |
+|--------|-------|------|
+| Uzum Market | uzum.uz — JSON API | 🟠 |
+| Olcha.uz | olcha.uz — scraping | 🍒 |
+| OLX.uz | olx.uz — scraping | 🟢 |
+| Wildberries | search.wb.ru — JSON API | 🍇 |
+| Ozon.uz | ozon.uz — API/scraping | 🔵 |
+| Texnomart.uz | texnomart.uz — scraping | ⚡ |
+| Makro.uz | makro.uz — scraping | 🛒 |
+| MediaPark.uz | mediapark.uz — scraping | 📺 |
+| Tezkor.uz | tezkor.uz — scraping | ⚡ |
+| Asaxiy.uz | asaxiy.uz — API+scraping | 🛍 |
 
 ## Arxitektura
 
@@ -18,6 +32,16 @@ handlers/
   contact_handler.py     # Kontakt saqlash
 services/
   gemini_service.py      # Google Gemini Vision API
+  uzum_service.py        # Uzum Market API
+  olcha_service.py       # Olcha.uz scraper
+  olx_service.py         # OLX.uz scraper
+  wildberries_service.py # Wildberries search.wb.ru API
+  ozon_service.py        # Ozon.uz API+scraper
+  texnomart_service.py   # Texnomart.uz scraper
+  makro_service.py       # Makro.uz scraper
+  mediapark_service.py   # MediaPark.uz scraper
+  tezkor_service.py      # Tezkor.uz scraper
+  asaxiy_service.py      # Asaxiy.uz API+scraper
   uzum_service.py        # uzum.uz scraper/API
   olcha_service.py       # olcha.uz scraper
   olx_service.py         # olx.uz scraper

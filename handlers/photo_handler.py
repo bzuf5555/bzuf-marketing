@@ -1,6 +1,4 @@
-import asyncio
 import logging
-from time import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -8,7 +6,7 @@ from telegram.constants import ChatAction
 
 from database.mongodb import user_exists, increment_search_count
 from agents.vision_agent import process_image
-from agents.search_agent import search_all_markets, format_results_message
+from agents.search_agent import search_all_markets, format_results_message, get_best_image
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +15,10 @@ NOT_REGISTERED_TEXT = (
     "/start buyrug'ini yuboring va telefon raqamingizni ulashing."
 )
 
-PROCESSING_TEXT = "🔍 Rasm tahlil qilinmoqda, iltimos kuting..."
+PROCESSING_TEXT = (
+    "🔍 Rasm tahlil qilinmoqda...\n"
+    "⏳ 10 ta marketdan qidirilmoqda, biroz kuting."
+)
 
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -38,16 +39,12 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         photo = message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
-        image_bytes = await file.download_as_bytearray()
-        image_bytes = bytes(image_bytes)
+        image_bytes = bytes(await file.download_as_bytearray())
 
         gemini_api_key: str = context.bot_data["gemini_api_key"]
         config = context.bot_data["config"]
 
-        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
-
         vision_result = await process_image(image_bytes, gemini_api_key)
-
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
 
         search_results = await search_all_markets(
@@ -56,56 +53,52 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             timeout=config.SEARCH_TIMEOUT,
         )
 
-        result_text = format_results_message(search_results)
-
-        keyboard = None
-        if search_results.all_results:
-            first = search_results.all_results[0]
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    f"🛒 {first.source} da ko'rish",
-                    url=first.product_url,
-                )]
-            ])
+        messages = format_results_message(search_results)
+        best_image = get_best_image(search_results)
 
         await processing_msg.delete()
 
-        if search_results.all_results and search_results.all_results[0].image_url:
+        # Birinchi xabar — tavsif + topilgan umumiy soni
+        first_msg = messages[0]
+        if best_image:
             try:
                 await message.reply_photo(
-                    photo=search_results.all_results[0].image_url,
-                    caption=result_text,
+                    photo=best_image,
+                    caption=first_msg,
                     parse_mode="HTML",
-                    reply_markup=keyboard,
                 )
             except Exception:
-                await message.reply_text(
-                    result_text,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                    disable_web_page_preview=False,
-                )
+                await message.reply_text(first_msg, parse_mode="HTML", disable_web_page_preview=True)
         else:
+            await message.reply_text(first_msg, parse_mode="HTML", disable_web_page_preview=True)
+
+        # Keyingi xabarlar — har bir marketplace uchun alohida
+        for market_msg in messages[1:]:
+            await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
             await message.reply_text(
-                result_text,
+                market_msg,
                 parse_mode="HTML",
-                reply_markup=keyboard,
                 disable_web_page_preview=False,
             )
 
         await increment_search_count(user.id)
-        logger.info("Photo processed for user %d: %s", user.id, vision_result.display_title)
+        logger.info(
+            "Photo processed: user=%d, item=%s, markets=%d, results=%d",
+            user.id,
+            vision_result.display_title,
+            len(search_results.results_by_source),
+            search_results.total_found,
+        )
 
     except ValueError as e:
         await processing_msg.delete()
         await message.reply_text(
-            "😔 Rasmdan mahsulotni aniqlay olmadim. Boshqa rasm yuboring.",
+            "😔 Rasmdan mahsulotni aniqlay olmadim.\n"
+            "Yaxshiroq yorug'lik va aniqroq rasm bilan qayta urinib ko'ring."
         )
-        logger.warning("Vision error for user %d: %s", user.id, e)
+        logger.warning("Vision error user=%d: %s", user.id, e)
 
     except Exception as e:
         await processing_msg.delete()
-        await message.reply_text(
-            "❌ Xatolik yuz berdi. Iltimos, qayta urinib ko'ring.",
-        )
-        logger.error("Photo handler error for user %d: %s", user.id, e, exc_info=True)
+        await message.reply_text("❌ Xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
+        logger.error("Photo handler error user=%d: %s", user.id, e, exc_info=True)
