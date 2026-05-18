@@ -86,9 +86,9 @@ def _sync_analyze(image_bytes: bytes, api_key: str) -> ImageAnalysis:
     model = genai.GenerativeModel(
         "gemini-2.5-flash",
         generation_config=genai.types.GenerationConfig(
-            temperature=0.05,
-            max_output_tokens=1024,
-            response_mime_type="application/json",
+            temperature=0.1,
+            max_output_tokens=2048,
+            # response_mime_type olib tashlandi — 2.5-flash bilan mos emas
         ),
     )
 
@@ -99,6 +99,13 @@ def _sync_analyze(image_bytes: bytes, api_key: str) -> ImageAnalysis:
     response = model.generate_content([VISION_PROMPT, image])
     raw_text = response.text.strip()
 
+    # gemini-2.5-flash thinking mode ishlatadi — JSON markdown blok ichida kelishi mumkin
+    # Avval ```json ... ``` blokini qidirish
+    code_block = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", raw_text)
+    if code_block:
+        raw_text = code_block.group(1)
+
+    # Keyin oddiy JSON obyektini qidirish
     json_match = re.search(r"\{[\s\S]*\}", raw_text)
     if not json_match:
         raise ValueError(f"Gemini JSON qaytarmadi: {raw_text[:200]}")
