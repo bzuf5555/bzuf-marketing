@@ -1,8 +1,8 @@
 """
-Search Agent — O'zbekistondagi BARCHA marketlardan parallel qidiradi (MEDIUM → Sonnet).
-Jami 10 ta marketplace: Uzum, Olcha, OLX, Wildberries, Ozon,
-Texnomart, Makro, MediaPark, Tezkor, Asaxiy.
-asyncio.gather — hammasi bir vaqtda, birortasi ishlamasa o'tkazib yuboriladi.
+[SONNET] Search Agent — 10 ta marketplace parallel qidiruv + cache.
+- Uzbek query: Uzum, Olcha, OLX, Texnomart, Makro, MediaPark, Tezkor, Asaxiy
+- Russian query: Wildberries, Ozon (rus tilida yaxshiroq natija beradi)
+- Cache: bir xil query 30 daqiqa davomida qayta API chaqirmaydi
 """
 import asyncio
 import logging
@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from agents.vision_agent import VisionResult
 from agents.token_agent import get_model, log_task_to_md
+from utils.cache import search_cache
 from services.uzum_service import ProductResult, search_uzum
 from services.olcha_service import search_olcha
 from services.olx_service import search_olx
@@ -32,7 +33,7 @@ MARKETPLACE_ICONS = {
     "Texnomart.uz":  "⚡",
     "Makro.uz":      "🛒",
     "MediaPark.uz":  "📺",
-    "Tezkor.uz":     "⚡",
+    "Tezkor.uz":     "🚀",
     "Asaxiy.uz":     "🛍",
 }
 
@@ -42,6 +43,11 @@ class SearchResults:
     vision: VisionResult
     results_by_source: dict[str, list[ProductResult]]
     total_found: int
+    from_cache: bool = False
+
+
+def _cache_key(vision: VisionResult) -> str:
+    return f"{vision.search_query_uz}|{vision.search_query_ru}".lower().strip()
 
 
 async def search_all_markets(
@@ -52,20 +58,33 @@ async def search_all_markets(
     model = get_model("marketplace_search")
     log_task_to_md("marketplace_search", "started", model)
 
-    pq = vision.search_query_primary    # Uzum/Olcha/WB/Ozon/Texnomart/Makro/MediaPark/Tezkor/Asaxiy
-    sq = vision.search_query_secondary  # OLX uchun (biroz keng)
+    # Cache tekshirish
+    key = _cache_key(vision)
+    cached = search_cache.get(key)
+    if cached is not None:
+        logger.info("Cache HIT: '%s'", key[:50])
+        return SearchResults(
+            vision=vision,
+            results_by_source=cached["results_by_source"],
+            total_found=cached["total_found"],
+            from_cache=True,
+        )
 
-    tasks = await asyncio.gather(
-        search_uzum(pq, max_results, timeout),
-        search_olcha(pq, max_results, timeout),
-        search_olx(sq, max_results, timeout),
-        search_wildberries(pq, max_results, timeout),
-        search_ozon(pq, max_results, timeout),
-        search_texnomart(pq, max_results, timeout),
-        search_makro(pq, max_results, timeout),
-        search_mediapark(pq, max_results, timeout),
-        search_tezkor(pq, max_results, timeout),
-        search_asaxiy(pq, max_results, timeout),
+    uz = vision.search_query_uz    # O'zbek tilidagi marketlar uchun
+    ru = vision.search_query_ru    # Wildberries, Ozon uchun
+    olx = vision.search_query_olx  # OLX — keng qidiruv
+
+    all_tasks = await asyncio.gather(
+        search_uzum(uz, max_results, timeout),
+        search_olcha(uz, max_results, timeout),
+        search_olx(olx, max_results, timeout),
+        search_wildberries(ru, max_results, timeout),   # rus query
+        search_ozon(ru, max_results, timeout),          # rus query
+        search_texnomart(uz, max_results, timeout),
+        search_makro(uz, max_results, timeout),
+        search_mediapark(uz, max_results, timeout),
+        search_tezkor(uz, max_results, timeout),
+        search_asaxiy(uz, max_results, timeout),
     )
 
     sources = [
@@ -75,26 +94,30 @@ async def search_all_markets(
 
     results_by_source: dict[str, list[ProductResult]] = {}
     total = 0
-    for source, res_list in zip(sources, tasks):
+    for source, res_list in zip(sources, all_tasks):
         if res_list:
             results_by_source[source] = res_list[:max_results]
             total += len(results_by_source[source])
 
-    log_task_to_md("marketplace_search", f"completed ({total} results, {len(results_by_source)} markets)", model)
-    logger.info("Search done: %d results from %d markets", total, len(results_by_source))
+    # Cahelash
+    search_cache.set(key, {"results_by_source": results_by_source, "total_found": total})
+
+    log_task_to_md("marketplace_search", f"done ({total} results, {len(results_by_source)} markets)", model)
+    logger.info("Search: %d results from %d markets | uz='%s' ru='%s'", total, len(results_by_source), uz, ru)
 
     return SearchResults(
         vision=vision,
         results_by_source=results_by_source,
         total_found=total,
+        from_cache=False,
     )
 
 
 def format_results_message(results: SearchResults) -> list[str]:
     """
-    Telegram xabar uzunligi 4096 belgidan oshmasligi uchun
-    bir nechta xabar qaytaradi: birinchisi mahsulot tavsifi,
-    keyingisi har bir marketplace uchun.
+    Bir nechta xabar qaytaradi (Telegram 4096 belgi limiti).
+    Birinchi: mahsulot tavsifi + statistika.
+    Keyingilar: har bir market bloki alohida.
     """
     vision = results.vision
     analysis = vision.analysis
@@ -109,34 +132,32 @@ def format_results_message(results: SearchResults) -> list[str]:
     if analysis.model:
         lines.append(f"📋 Model: {analysis.model}")
     lines.append(f"✅ Holat: {analysis.condition}")
+    if analysis.key_features:
+        lines.append(f"⚙️ {' · '.join(analysis.key_features[:3])}")
     lines.append(f"\n📝 {analysis.description}")
 
     found_sources = len(results.results_by_source)
+    cache_note = " ⚡ (keshdan)" if results.from_cache else ""
     if found_sources == 0:
-        lines.append("\n\n😔 Hech qaysi marketda topilmadi. Boshqa rasm yuboring.")
+        lines.append("\n\n😔 Hech qaysi marketda topilmadi.\nBoshqa rasm yuboring.")
         return ["\n".join(lines)]
 
-    lines.append(f"\n\n🛒 <b>{results.total_found} ta mahsulot, {found_sources} ta marketdan topildi:</b>")
-    header_msg = "\n".join(lines)
-
-    messages = [header_msg]
+    lines.append(f"\n\n🛒 <b>{results.total_found} mahsulot, {found_sources} marketdan{cache_note}</b>")
+    messages = ["\n".join(lines)]
 
     for source, products in results.results_by_source.items():
         icon = MARKETPLACE_ICONS.get(source, "🛒")
-        block_lines = [f"{icon} <b>{source}</b>"]
-
+        block = [f"{icon} <b>{source}</b>"]
         for i, p in enumerate(products, 1):
-            block_lines.append(f"\n<b>{i}.</b> {p.title}")
-            block_lines.append(f"   💰 {p.price}")
-            block_lines.append(f"   🔗 <a href='{p.product_url}'>Ko'rish →</a>")
-
-        messages.append("\n".join(block_lines))
+            block.append(f"\n<b>{i}.</b> {p.title}")
+            block.append(f"   💰 {p.price}")
+            block.append(f"   🔗 <a href='{p.product_url}'>Ko'rish →</a>")
+        messages.append("\n".join(block))
 
     return messages
 
 
 def get_best_image(results: SearchResults) -> str | None:
-    """Natijalar ichidan birinchi rasmli mahsulot rasmini qaytaradi."""
     for products in results.results_by_source.values():
         for p in products:
             if p.image_url:
