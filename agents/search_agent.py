@@ -31,9 +31,9 @@ _ICONS = {
     "Wildberries":   "🍇",
     "Ozon.uz":       "🔵",
     "Texnomart.uz":  "⚡",
-    "Makro.uz":      "🛒",
+    "Korzinka.uz":   "🛒",
     "MediaPark.uz":  "📺",
-    "Tezkor.uz":     "🚀",
+    "Express24.uz":  "🚀",
     "Asaxiy.uz":     "🛍",
 }
 

@@ -3,46 +3,50 @@ import urllib.parse
 from typing import Optional
 
 import httpx
-from bs4 import BeautifulSoup
 
 from services.uzum_service import ProductResult
 
 logger = logging.getLogger(__name__)
 
-OZON_SEARCH_URL = "https://www.ozon.uz/search/"
-OZON_BASE = "https://www.ozon.uz"
+OZON_BASE = "https://www.ozon.ru"  # ozon.uz SSL xato beradi — ozon.ru ishlatamiz
+OZON_API = "https://www.ozon.ru/api/composer-api.bx/page/json/v2"
 OZON_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9,uz;q=0.8,en;q=0.7",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9,uz;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.ozon.ru/",
+    "x-o3-app-name": "ozon-front",
+    "x-o3-app-version": "7.0.4",
+    "x-o3-language": "ru",
+    "x-o3-currency": "UZS",
 }
-OZON_API_URL = "https://www.ozon.uz/api/composer-api.bx/page/json/v2"
 
 
-async def search_ozon(query: str, max_results: int = 5, timeout: int = 12) -> list[ProductResult]:
+async def search_ozon(query: str, max_results: int = 5, timeout: int = 15) -> list[ProductResult]:
     encoded = urllib.parse.quote(query)
     params = {"url": f"/search/?text={encoded}&from_global=true"}
 
     try:
         async with httpx.AsyncClient(
-            timeout=timeout,
-            headers=OZON_HEADERS,
+            timeout=timeout, headers=OZON_HEADERS,
             follow_redirects=True,
+            verify=False,  # SSL sertifikat muammolarini e'tiborsiz qoldirish
         ) as client:
-            response = await client.get(OZON_API_URL, params=params)
+            response = await client.get(OZON_API, params=params)
             response.raise_for_status()
             data = response.json()
 
         results = []
+        import json as json_mod
         widget_states = data.get("widgetStates", {})
 
         for key, value in widget_states.items():
-            if "searchResultsV2" not in key and "tileGrid" not in key:
-                continue
             if not isinstance(value, str):
                 continue
+            if "searchResultsV2" not in key and "tileGrid" not in key and "searchV2" not in key:
+                continue
 
-            import json as json_mod
             try:
                 widget_data = json_mod.loads(value)
             except Exception:
@@ -54,37 +58,33 @@ async def search_ozon(query: str, max_results: int = 5, timeout: int = 12) -> li
                     action = item.get("action", {})
                     link = action.get("link", "")
                     product_url = f"{OZON_BASE}{link}" if link.startswith("/") else link
+                    if not product_url:
+                        continue
 
-                    main_state = item.get("mainState", [])
                     title = ""
                     price = "Narx ko'rsatilmagan"
                     image_url: Optional[str] = None
 
-                    for state in main_state:
+                    for state in item.get("mainState", []):
                         if state.get("id") == "name":
-                            content = state.get("atom", {}).get("textAtom", {})
-                            title = content.get("text", "")
+                            title = state.get("atom", {}).get("textAtom", {}).get("text", "")
                         if state.get("id") == "price":
-                            content = state.get("atom", {}).get("priceAtom", {})
-                            price = content.get("price", price)
+                            price = state.get("atom", {}).get("priceAtom", {}).get("price", price)
 
-                    tile_image = item.get("tileImage", {})
-                    if tile_image:
-                        image_url = tile_image.get("imageURL") or tile_image.get("src")
+                    tile_img = item.get("tileImage", {})
+                    if tile_img:
+                        image_url = tile_img.get("imageURL") or tile_img.get("src")
 
-                    if not title or not product_url:
+                    if not title:
                         continue
 
                     results.append(ProductResult(
-                        title=title,
-                        price=price,
-                        image_url=image_url,
-                        product_url=product_url,
+                        title=title, price=price,
+                        image_url=image_url, product_url=product_url,
                         source="Ozon.uz",
                     ))
                 except Exception as e:
                     logger.debug("Ozon item parse: %s", e)
-                    continue
 
             if results:
                 break
