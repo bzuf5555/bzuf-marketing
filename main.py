@@ -1,6 +1,8 @@
+import asyncio
 import logging
-from aiohttp import web
+import signal
 
+from aiohttp import web
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -24,61 +26,107 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def health_check(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "bot": "bzuf-marketing"})
-
-
-async def post_init(application: Application) -> None:
-    config = application.bot_data["config"]
-    await db_connect(config.MONGODB_URI)
-    logger.info("Bot initialized — webhook mode: %s", bool(config.RENDER_EXTERNAL_URL))
-
-
-async def post_shutdown(application: Application) -> None:
-    await db_disconnect()
-    logger.info("Bot shut down")
-
-
-def main() -> None:
-    config = load_config()
-
+def _build_application(config) -> Application:
     application = (
         Application.builder()
         .token(config.BOT_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
         .build()
     )
-
     application.bot_data["config"] = config
     application.bot_data["gemini_api_key"] = config.GEMINI_API_KEY
 
-    # group=-1 — barcha updatelardan OLDIN ishga tushadi
-    # Ro'yxatdan o'tmagan foydalanuvchini /start va contact dan boshqa hamma narsadan to'sadi
     application.add_handler(TypeHandler(Update, enforce_registration), group=-1)
-
-    # Asosiy handlerlar (group=0, default)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    return application
 
-    if config.RENDER_EXTERNAL_URL:
-        base = config.RENDER_EXTERNAL_URL.rstrip("/")
-        if not base.startswith("http"):
-            base = f"https://{base}"
-        webhook_url = f"{base}/{config.BOT_TOKEN}"
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=config.PORT,
-            url_path=config.BOT_TOKEN,
-            webhook_url=webhook_url,
+
+async def _webhook_handler(request: web.Request, application: Application) -> web.Response:
+    """Telegram update ni qabul qiladi va application queue ga uzatadi."""
+    try:
+        secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        config = application.bot_data["config"]
+        if secret != config.WEBHOOK_SECRET:
+            return web.Response(status=403)
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.update_queue.put(update)
+    except Exception as e:
+        logger.error("Webhook request error: %s", e)
+    return web.Response(status=200)
+
+
+async def _health_handler(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "bot": "bzuf-marketing"})
+
+
+async def _run_webhook(config) -> None:
+    application = _build_application(config)
+
+    base = config.RENDER_EXTERNAL_URL.rstrip("/")
+    if not base.startswith("http"):
+        base = f"https://{base}"
+    webhook_url = f"{base}/{config.BOT_TOKEN}"
+
+    async with application:
+        await db_connect(config.MONGODB_URI)
+        await application.start()
+        await application.bot.set_webhook(
+            url=webhook_url,
             secret_token=config.WEBHOOK_SECRET,
             allowed_updates=Update.ALL_TYPES,
         )
         logger.info("Webhook: %s", webhook_url)
+
+        # aiohttp server — webhook + /health ikkalasi
+        aioapp = web.Application()
+        aioapp.router.add_post(f"/{config.BOT_TOKEN}",
+                               lambda r: _webhook_handler(r, application))
+        aioapp.router.add_get("/health", _health_handler)
+
+        runner = web.AppRunner(aioapp)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", config.PORT)
+        await site.start()
+        logger.info("Server listening on port %d", config.PORT)
+
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, stop_event.set)
+            except NotImplementedError:
+                pass  # Windows da signal handler yo'q
+
+        await stop_event.wait()
+        await runner.cleanup()
+        await application.stop()
+        await db_disconnect()
+
+
+def _run_polling(config) -> None:
+    application = _build_application(config)
+
+    async def _post_init(app: Application) -> None:
+        await db_connect(config.MONGODB_URI)
+
+    async def _post_shutdown(app: Application) -> None:
+        await db_disconnect()
+
+    application.post_init = _post_init
+    application.post_shutdown = _post_shutdown
+
+    logger.info("Polling mode (local development)")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+def main() -> None:
+    config = load_config()
+    if config.RENDER_EXTERNAL_URL:
+        asyncio.run(_run_webhook(config))
     else:
-        logger.info("Polling mode (local)")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        _run_polling(config)
 
 
 if __name__ == "__main__":

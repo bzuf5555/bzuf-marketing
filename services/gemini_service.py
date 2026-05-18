@@ -1,19 +1,30 @@
 """
 [OPUS] Gemini Vision Service — rasm tahlili.
-Optimizatsiya: WB/Ozon uchun alohida rus tilidagi query,
-kategoriyaga asoslanib qidiruv aniqlashtirish.
+BUG FIX: sync PIL va genai calls → asyncio.to_thread (event loop bloklanmaydi)
+BUG FIX: genai.configure() faqat bir marta chaqiriladi
 """
+import asyncio
 import io
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import google.generativeai as genai
 import PIL.Image
 
 logger = logging.getLogger(__name__)
+
+_configured = False
+
+
+def _ensure_configured(api_key: str) -> None:
+    global _configured
+    if not _configured:
+        genai.configure(api_key=api_key)
+        _configured = True
+
 
 VISION_PROMPT = """
 Siz professional e-commerce ekspertisiz. Rasmni diqqat bilan ko'rib chiqing.
@@ -60,34 +71,33 @@ class ImageAnalysis:
     description: str
 
 
-async def analyze_image(image_bytes: bytes, api_key: str) -> ImageAnalysis:
-    genai.configure(api_key=api_key)
+def _sync_analyze(image_bytes: bytes, api_key: str) -> ImageAnalysis:
+    """Sync funksiya — asyncio.to_thread orqali chaqiriladi."""
+    _ensure_configured(api_key)
+
     model = genai.GenerativeModel(
         "gemini-1.5-flash",
         generation_config=genai.types.GenerationConfig(
-            temperature=0.05,       # past temperature = izchil natija
+            temperature=0.05,
             max_output_tokens=1024,
             response_mime_type="application/json",
         ),
     )
 
     image = PIL.Image.open(io.BytesIO(image_bytes))
-
-    # Rasm sifatini optimallashtirish (katta rasmlar sekinlashtiradi)
     if max(image.size) > 1280:
         image.thumbnail((1280, 1280), PIL.Image.LANCZOS)
 
     response = model.generate_content([VISION_PROMPT, image])
     raw_text = response.text.strip()
 
-    # JSON blokini ajratib olish
     json_match = re.search(r"\{[\s\S]*\}", raw_text)
     if not json_match:
         raise ValueError(f"Gemini JSON qaytarmadi: {raw_text[:200]}")
 
     data = json.loads(json_match.group())
 
-    analysis = ImageAnalysis(
+    return ImageAnalysis(
         item_type=data.get("item_type", "Mahsulot"),
         category=data.get("category", "other"),
         brand=data.get("brand") or None,
@@ -102,6 +112,10 @@ async def analyze_image(image_bytes: bytes, api_key: str) -> ImageAnalysis:
         description=data.get("description", ""),
     )
 
+
+async def analyze_image(image_bytes: bytes, api_key: str) -> ImageAnalysis:
+    """Async wrapper — event loop ni bloklamaydi."""
+    analysis = await asyncio.to_thread(_sync_analyze, image_bytes, api_key)
     logger.info(
         "Vision: %s | brand=%s | cat=%s | uz='%s' | ru='%s'",
         analysis.item_type, analysis.brand, analysis.category,

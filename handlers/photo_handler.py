@@ -11,6 +11,9 @@ from middleware.rate_limiter import rate_limiter
 
 logger = logging.getLogger(__name__)
 
+# Telegram caption limiti 1024 char — header bu limitdan oshib ketmasligi uchun
+_CAPTION_LIMIT = 900
+
 _STEP1 = (
     "┌──────────────────────────┐\n"
     "│  🔍  Rasm tahlil qilinmoqda  │\n"
@@ -33,6 +36,14 @@ _RATE_LIMIT_TPL = (
 )
 
 
+async def _safe_delete(message) -> None:
+    """BUG FIX: delete xatosini jimgina o'tkazib yuboradi."""
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     message = update.effective_message
@@ -40,7 +51,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not user or not message or not message.photo:
         return
 
-    # Rate limit
     wait = await rate_limiter.check(user.id)
     if wait > 0:
         await message.reply_text(
@@ -49,7 +59,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    # Step 1 — "Rasm tahlil qilinmoqda"
     progress = await message.reply_text(_STEP1)
     await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
 
@@ -63,7 +72,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         vision_result = await process_image(image_bytes, gemini_api_key)
 
-        # Step 2 — "Marketlardan qidirilmoqda"
         await progress.edit_text(_STEP2)
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
 
@@ -75,19 +83,31 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         msgs = format_results_message(search_results)
         best_image = get_best_image(search_results)
-
-        await progress.delete()
-
-        # Birinchi xabar — header (rasm bilan yoki tekstda)
         header_text = msgs[0]
+
+        await _safe_delete(progress)
+
+        # BUG FIX: caption > 900 char bo'lsa, rasmni captionsiz, textni alohida yuboramiz
         if best_image and search_results.total_found > 0:
-            try:
-                await message.reply_photo(
-                    photo=best_image,
-                    caption=header_text,
-                    parse_mode="HTML",
-                )
-            except Exception:
+            if len(header_text) <= _CAPTION_LIMIT:
+                try:
+                    await message.reply_photo(
+                        photo=best_image,
+                        caption=header_text,
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    await message.reply_text(
+                        header_text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+            else:
+                # Rasm alohida, tavsif alohida
+                try:
+                    await message.reply_photo(photo=best_image)
+                except Exception:
+                    pass
                 await message.reply_text(
                     header_text,
                     parse_mode="HTML",
@@ -100,7 +120,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 disable_web_page_preview=True,
             )
 
-        # Har bir marketplace — alohida xabar
         for market_msg in msgs[1:]:
             await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
             await message.reply_text(
@@ -119,7 +138,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
     except ValueError as e:
-        await progress.delete()
+        await _safe_delete(progress)
         await message.reply_text(
             "┌─────────────────────────┐\n"
             "│  😔  Mahsulot aniqlanmadi  │\n"
@@ -132,8 +151,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.warning("Vision error user=%d: %s", user.id, e)
 
     except Exception as e:
-        await progress.delete()
-        await message.reply_text(
-            "❌ Xatolik yuz berdi.\nIltimos, qayta urinib ko'ring."
-        )
+        await _safe_delete(progress)
+        await message.reply_text("❌ Xatolik yuz berdi.\nIltimos, qayta urinib ko'ring.")
         logger.error("Photo error user=%d: %s", user.id, e, exc_info=True)

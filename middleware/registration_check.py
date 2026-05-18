@@ -34,7 +34,6 @@ async def enforce_registration(update: Update, context: ContextTypes.DEFAULT_TYP
     if not message or not user:
         return
 
-    # /start va contact ulashish — o'tkazib yuboriladi
     if message.text and message.text.startswith("/start"):
         return
     if message.contact:
@@ -48,4 +47,4 @@ async def enforce_registration(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=_contact_keyboard(),
         )
         logger.info("Unregistered user %d blocked: %s", user.id, message.text or "[non-text]")
-        raise ApplicationHandlerStop
+        raise ApplicationHandlerStop()  # BUG FIX: class emas instance raise qilinadi
