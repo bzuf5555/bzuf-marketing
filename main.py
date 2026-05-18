@@ -63,7 +63,10 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
 
     if config.RENDER_EXTERNAL_URL:
-        webhook_url = f"https://{config.RENDER_EXTERNAL_URL}/{config.BOT_TOKEN}"
+        base = config.RENDER_EXTERNAL_URL.rstrip("/")
+        if not base.startswith("http"):
+            base = f"https://{base}"
+        webhook_url = f"{base}/{config.BOT_TOKEN}"
         application.run_webhook(
             listen="0.0.0.0",
             port=config.PORT,
