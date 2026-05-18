@@ -1,24 +1,64 @@
 import logging
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 from database.mongodb import user_exists
 
 logger = logging.getLogger(__name__)
 
-WELCOME_TEXT = (
-    "👋 <b>Assalomu alaykum!</b>\n\n"
-    "Men <b>BzUF Market Bot</b>man 🤖\n\n"
-    "📸 Istalgan mahsulot rasmini yuboring — "
-    "men uni Uzum Market, Olcha.uz va OLX.uz da topib beraman!\n\n"
-    "Davom etish uchun <b>telefon raqamingizni ulashing</b> 👇"
-)
+# ─────────────────────────────────────────
+#  Yangi foydalanuvchi uchun welcome ekrani
+# ─────────────────────────────────────────
+_WELCOME_NEW = """\
+╔══════════════════════════╗
+║   🛍  <b>BzUF Market Bot</b>    ║
+╚══════════════════════════╝
 
-ALREADY_REGISTERED_TEXT = (
-    "✅ Siz allaqachon ro'yxatdan o'tgansiz!\n\n"
-    "📸 Menga mahsulot rasmini yuboring — men uni marketlarda topaman!"
-)
+Salom, <b>{name}</b>! 👋
+
+<i>Mahsulot rasmi yuboring — O'zbekistondagi
+10 ta yirik marketdan topib beraman!</i>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🟠 Uzum    🍒 Olcha    🟢 OLX
+🍇 WB      🔵 Ozon     ⚡ Texnomart
+🛒 Makro   📺 MediaPk  🚀 Tezkor  🛍 Asaxiy
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔐 Davom etish uchun <b>telefon raqamingizni</b>
+ulashing — ma'lumotlaringiz xavfsiz saqlanadi.\
+"""
+
+# ─────────────────────────────────────────
+#  Qaytib kelgan foydalanuvchi
+# ─────────────────────────────────────────
+_WELCOME_BACK = """\
+╔══════════════════════════╗
+║   🛍  <b>BzUF Market Bot</b>    ║
+╚══════════════════════════╝
+
+Qaytib keldingiz, <b>{name}</b>! 🎉
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📸 <b>Mahsulot rasmini yuboring</b>
+
+Misol:
+  🚲 Velosiped → barcha o'lcham &amp; narxlar
+  💻 Noutbuk   → brend variantlari
+  👟 Kiyim     → rang &amp; o'lchamlar
+
+10 ta market — <b>bir zumda</b> ⚡\
+"""
+
+
+def _contact_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 Telefon raqamni ulashish", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="Telefon raqamni ulashish uchun bosing...",
+    )
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -26,26 +66,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not user:
         return
 
-    already = await user_exists(user.id)
+    name = user.first_name or "Do'st"
 
-    if already:
+    already_registered = await user_exists(user.id)
+
+    if already_registered:
         await update.message.reply_text(
-            ALREADY_REGISTERED_TEXT,
+            _WELCOME_BACK.format(name=name),
             parse_mode="HTML",
         )
-        logger.info("Returning user: %d", user.id)
+        logger.info("Returning user /start: %d (@%s)", user.id, user.username)
         return
 
-    contact_button = KeyboardButton("📱 Telefon raqamni ulashish", request_contact=True)
-    keyboard = ReplyKeyboardMarkup(
-        [[contact_button]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
     await update.message.reply_text(
-        WELCOME_TEXT,
+        _WELCOME_NEW.format(name=name),
         parse_mode="HTML",
-        reply_markup=keyboard,
+        reply_markup=_contact_keyboard(),
     )
     logger.info("New user /start: %d (@%s)", user.id, user.username)

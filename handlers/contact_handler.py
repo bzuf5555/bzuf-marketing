@@ -7,12 +7,22 @@ from database.mongodb import upsert_user
 
 logger = logging.getLogger(__name__)
 
-SUCCESS_TEXT = (
-    "✅ <b>Rahmat! Kontaktingiz saqlandi.</b>\n\n"
-    "Endi menga mahsulot rasmini yuboring — "
-    "men uni <b>Uzum Market</b>, <b>Olcha.uz</b> va <b>OLX.uz</b> dan topaman! 🛒\n\n"
-    "📸 Rasm yuboring..."
-)
+_SUCCESS_TEXT = """\
+✅ <b>Ro'yxatdan o'tdingiz!</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📸 <b>Endi mahsulot rasmini yuboring</b>
+
+Qanday ishlaydi:
+  1️⃣  Rasm yuboring
+  2️⃣  AI mahsulotni tahlil qiladi
+  3️⃣  10 ta marketdan qidiradi
+  4️⃣  Narx &amp; havola yuboriladi
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+<i>🟠 Uzum · 🍒 Olcha · 🟢 OLX · 🍇 WB · 🔵 Ozon
+⚡ Texnomart · 🛒 Makro · 📺 MediaPark · 🚀 Tezkor · 🛍 Asaxiy</i>\
+"""
 
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -35,8 +45,8 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
     await update.message.reply_text(
-        SUCCESS_TEXT,
+        _SUCCESS_TEXT,
         parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove(),
     )
-    logger.info("Contact saved: %d — %s", user.id, phone)
+    logger.info("Contact saved: user=%d phone=%s", user.id, phone)

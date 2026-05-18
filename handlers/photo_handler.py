@@ -1,6 +1,6 @@
 import logging
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
@@ -11,14 +11,25 @@ from middleware.rate_limiter import rate_limiter
 
 logger = logging.getLogger(__name__)
 
-NOT_REGISTERED_TEXT = (
-    "⚠️ Avval ro'yxatdan o'ting!\n\n"
-    "/start buyrug'ini yuboring va telefon raqamingizni ulashing."
+_STEP1 = (
+    "┌──────────────────────────┐\n"
+    "│  🔍  Rasm tahlil qilinmoqda  │\n"
+    "└──────────────────────────┘\n\n"
+    "⏳ AI skannerlamoqda..."
 )
 
-PROCESSING_TEXT = (
-    "🔍 Rasm tahlil qilinmoqda...\n"
-    "⏳ 10 ta marketdan parallel qidirilmoqda."
+_STEP2 = (
+    "┌──────────────────────────┐\n"
+    "│  🔍  Rasm tahlil qilinmoqda  │\n"
+    "└──────────────────────────┘\n\n"
+    "✅ Mahsulot aniqlandi\n"
+    "⏳ 10 ta marketdan qidirilmoqda..."
+)
+
+_RATE_LIMIT_TPL = (
+    "⏳ <b>Biroz kuting</b>\n\n"
+    "Keyingi qidiruv <b>{sec:.0f} soniyadan</b> so'ng.\n"
+    "<i>Sifatli natija uchun cheklov mavjud.</i>"
 )
 
 
@@ -29,21 +40,17 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not user or not message or not message.photo:
         return
 
-    # Rate limit tekshirish
-    wait_seconds = await rate_limiter.check(user.id)
-    if wait_seconds > 0:
+    # Rate limit
+    wait = await rate_limiter.check(user.id)
+    if wait > 0:
         await message.reply_text(
-            f"⏳ Iltimos, {wait_seconds:.0f} soniya kuting.\n"
-            f"Tez-tez so'rov yubormaslik uchun cheklov mavjud."
+            _RATE_LIMIT_TPL.format(sec=wait),
+            parse_mode="HTML",
         )
         return
 
-    registered = await user_exists(user.id)
-    if not registered:
-        await message.reply_text(NOT_REGISTERED_TEXT)
-        return
-
-    processing_msg = await message.reply_text(PROCESSING_TEXT)
+    # Step 1 — "Rasm tahlil qilinmoqda"
+    progress = await message.reply_text(_STEP1)
     await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
 
     try:
@@ -55,6 +62,9 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         config = context.bot_data["config"]
 
         vision_result = await process_image(image_bytes, gemini_api_key)
+
+        # Step 2 — "Marketlardan qidirilmoqda"
+        await progress.edit_text(_STEP2)
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
 
         search_results = await search_all_markets(
@@ -63,27 +73,35 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             timeout=config.SEARCH_TIMEOUT,
         )
 
-        messages = format_results_message(search_results)
+        msgs = format_results_message(search_results)
         best_image = get_best_image(search_results)
 
-        await processing_msg.delete()
+        await progress.delete()
 
-        # Birinchi xabar — tavsif + statistika
-        first_msg = messages[0]
-        if best_image:
+        # Birinchi xabar — header (rasm bilan yoki tekstda)
+        header_text = msgs[0]
+        if best_image and search_results.total_found > 0:
             try:
                 await message.reply_photo(
                     photo=best_image,
-                    caption=first_msg,
+                    caption=header_text,
                     parse_mode="HTML",
                 )
             except Exception:
-                await message.reply_text(first_msg, parse_mode="HTML", disable_web_page_preview=True)
+                await message.reply_text(
+                    header_text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
         else:
-            await message.reply_text(first_msg, parse_mode="HTML", disable_web_page_preview=True)
+            await message.reply_text(
+                header_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
 
-        # Har bir marketplace uchun alohida xabar
-        for market_msg in messages[1:]:
+        # Har bir marketplace — alohida xabar
+        for market_msg in msgs[1:]:
             await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
             await message.reply_text(
                 market_msg,
@@ -93,23 +111,29 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await increment_search_count(user.id)
         logger.info(
-            "Done: user=%d item='%s' markets=%d results=%d cache=%s",
-            user.id,
-            vision_result.display_title,
+            "Done: user=%d item='%s' markets=%d total=%d cache=%s",
+            user.id, vision_result.display_title,
             len(search_results.results_by_source),
             search_results.total_found,
             search_results.from_cache,
         )
 
     except ValueError as e:
-        await processing_msg.delete()
+        await progress.delete()
         await message.reply_text(
-            "😔 Rasmdan mahsulotni aniqlay olmadim.\n"
-            "Yaxshiroq yorug'lik bilan qayta urinib ko'ring."
+            "┌─────────────────────────┐\n"
+            "│  😔  Mahsulot aniqlanmadi  │\n"
+            "└─────────────────────────┘\n\n"
+            "Quyidagilarni sinab ko'ring:\n"
+            "  • Yaxshiroq yorug'likda surating\n"
+            "  • Mahsulot aniq ko'rinsin\n"
+            "  • Fon shovqini kamaytiring"
         )
         logger.warning("Vision error user=%d: %s", user.id, e)
 
     except Exception as e:
-        await processing_msg.delete()
-        await message.reply_text("❌ Xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
+        await progress.delete()
+        await message.reply_text(
+            "❌ Xatolik yuz berdi.\nIltimos, qayta urinib ko'ring."
+        )
         logger.error("Photo error user=%d: %s", user.id, e, exc_info=True)

@@ -1,7 +1,7 @@
 """
 [SONNET] Search Agent — 10 ta marketplace parallel qidiruv + cache.
 - Uzbek query: Uzum, Olcha, OLX, Texnomart, Makro, MediaPark, Tezkor, Asaxiy
-- Russian query: Wildberries, Ozon (rus tilida yaxshiroq natija beradi)
+- Russian query: Wildberries, Ozon
 - Cache: bir xil query 30 daqiqa davomida qayta API chaqirmaydi
 """
 import asyncio
@@ -24,7 +24,7 @@ from services.asaxiy_service import search_asaxiy
 
 logger = logging.getLogger(__name__)
 
-MARKETPLACE_ICONS = {
+_ICONS = {
     "Uzum Market":   "🟠",
     "Olcha.uz":      "🍒",
     "OLX.uz":        "🟢",
@@ -36,6 +36,8 @@ MARKETPLACE_ICONS = {
     "Tezkor.uz":     "🚀",
     "Asaxiy.uz":     "🛍",
 }
+
+_SOURCES = list(_ICONS.keys())
 
 
 @dataclass
@@ -58,7 +60,6 @@ async def search_all_markets(
     model = get_model("marketplace_search")
     log_task_to_md("marketplace_search", "started", model)
 
-    # Cache tekshirish
     key = _cache_key(vision)
     cached = search_cache.get(key)
     if cached is not None:
@@ -70,16 +71,16 @@ async def search_all_markets(
             from_cache=True,
         )
 
-    uz = vision.search_query_uz    # O'zbek tilidagi marketlar uchun
-    ru = vision.search_query_ru    # Wildberries, Ozon uchun
-    olx = vision.search_query_olx  # OLX — keng qidiruv
+    uz  = vision.search_query_uz
+    ru  = vision.search_query_ru
+    olx = vision.search_query_olx
 
     all_tasks = await asyncio.gather(
         search_uzum(uz, max_results, timeout),
         search_olcha(uz, max_results, timeout),
         search_olx(olx, max_results, timeout),
-        search_wildberries(ru, max_results, timeout),   # rus query
-        search_ozon(ru, max_results, timeout),          # rus query
+        search_wildberries(ru, max_results, timeout),
+        search_ozon(ru, max_results, timeout),
         search_texnomart(uz, max_results, timeout),
         search_makro(uz, max_results, timeout),
         search_mediapark(uz, max_results, timeout),
@@ -87,23 +88,16 @@ async def search_all_markets(
         search_asaxiy(uz, max_results, timeout),
     )
 
-    sources = [
-        "Uzum Market", "Olcha.uz", "OLX.uz", "Wildberries", "Ozon.uz",
-        "Texnomart.uz", "Makro.uz", "MediaPark.uz", "Tezkor.uz", "Asaxiy.uz",
-    ]
-
     results_by_source: dict[str, list[ProductResult]] = {}
     total = 0
-    for source, res_list in zip(sources, all_tasks):
+    for source, res_list in zip(_SOURCES, all_tasks):
         if res_list:
             results_by_source[source] = res_list[:max_results]
             total += len(results_by_source[source])
 
-    # Cahelash
     search_cache.set(key, {"results_by_source": results_by_source, "total_found": total})
-
     log_task_to_md("marketplace_search", f"done ({total} results, {len(results_by_source)} markets)", model)
-    logger.info("Search: %d results from %d markets | uz='%s' ru='%s'", total, len(results_by_source), uz, ru)
+    logger.info("Search: %d results / %d markets | uz='%s' ru='%s'", total, len(results_by_source), uz, ru)
 
     return SearchResults(
         vision=vision,
@@ -113,47 +107,82 @@ async def search_all_markets(
     )
 
 
+# ──────────────────────────────────────────────────
+#  MESSAGE FORMATTING  (elite UI)
+# ──────────────────────────────────────────────────
+
+def _num_emoji(n: int) -> str:
+    return ("1️⃣", "2️⃣", "3️⃣")[n - 1] if 1 <= n <= 3 else f"{n}."
+
+
+def format_header(results: SearchResults) -> str:
+    """Birinchi xabar: mahsulot tavsifi + statistika."""
+    v = results.vision
+    a = v.analysis
+    found = len(results.results_by_source)
+    cache_tag = "  <i>⚡ keshdan</i>" if results.from_cache else ""
+
+    lines = [
+        "┌─────────────────────────────┐",
+        f"│  🔍  <b>{v.display_title}</b>",
+        "└─────────────────────────────┘",
+    ]
+
+    if a.brand:
+        lines.append(f"\n🏷  Brend:   <b>{a.brand}</b>")
+    if a.color:
+        lines.append(f"🎨  Rang:    {a.color}")
+    if a.size:
+        lines.append(f"📐  O'lcham: {a.size}")
+    if a.model:
+        lines.append(f"📋  Model:   {a.model}")
+    lines.append(f"✅  Holat:   {a.condition}")
+    if a.key_features:
+        lines.append(f"⚙️   {' · '.join(a.key_features[:3])}")
+
+    lines.append(f"\n📝 <i>{a.description}</i>")
+
+    if found == 0:
+        lines.append(
+            "\n\n😔 <b>Hech qaysi marketda topilmadi.</b>\n"
+            "Yaxshiroq yorug'lik bilan boshqa rasm yuboring."
+        )
+    else:
+        lines.append(
+            f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🛒 <b>{results.total_found} ta mahsulot</b> · "
+            f"<b>{found} ta market</b>{cache_tag}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+
+    return "\n".join(lines)
+
+
+def format_market_block(source: str, products: list[ProductResult]) -> str:
+    """Har bir marketplace uchun alohida xabar bloki."""
+    icon = _ICONS.get(source, "🛒")
+    lines = [
+        f"┌─── {icon}  <b>{source}</b> ───",
+    ]
+    for i, p in enumerate(products, 1):
+        num = _num_emoji(i)
+        lines.append(f"│")
+        lines.append(f"│  {num}  <b>{p.title}</b>")
+        lines.append(f"│      💰  {p.price}")
+        lines.append(f"│      🔗  <a href='{p.product_url}'>Xarid qilish →</a>")
+    lines.append("└────────────────────────────")
+    return "\n".join(lines)
+
+
 def format_results_message(results: SearchResults) -> list[str]:
     """
-    Bir nechta xabar qaytaradi (Telegram 4096 belgi limiti).
-    Birinchi: mahsulot tavsifi + statistika.
-    Keyingilar: har bir market bloki alohida.
+    Barcha xabarlar ro'yxatini qaytaradi.
+    [0] = mahsulot header
+    [1..N] = har bir marketplace bloki
     """
-    vision = results.vision
-    analysis = vision.analysis
-
-    lines = [f"🔍 <b>{vision.display_title}</b>"]
-    if analysis.brand:
-        lines.append(f"🏷 Brend: <b>{analysis.brand}</b>")
-    if analysis.color:
-        lines.append(f"🎨 Rang: {analysis.color}")
-    if analysis.size:
-        lines.append(f"📐 O'lcham: {analysis.size}")
-    if analysis.model:
-        lines.append(f"📋 Model: {analysis.model}")
-    lines.append(f"✅ Holat: {analysis.condition}")
-    if analysis.key_features:
-        lines.append(f"⚙️ {' · '.join(analysis.key_features[:3])}")
-    lines.append(f"\n📝 {analysis.description}")
-
-    found_sources = len(results.results_by_source)
-    cache_note = " ⚡ (keshdan)" if results.from_cache else ""
-    if found_sources == 0:
-        lines.append("\n\n😔 Hech qaysi marketda topilmadi.\nBoshqa rasm yuboring.")
-        return ["\n".join(lines)]
-
-    lines.append(f"\n\n🛒 <b>{results.total_found} mahsulot, {found_sources} marketdan{cache_note}</b>")
-    messages = ["\n".join(lines)]
-
+    messages = [format_header(results)]
     for source, products in results.results_by_source.items():
-        icon = MARKETPLACE_ICONS.get(source, "🛒")
-        block = [f"{icon} <b>{source}</b>"]
-        for i, p in enumerate(products, 1):
-            block.append(f"\n<b>{i}.</b> {p.title}")
-            block.append(f"   💰 {p.price}")
-            block.append(f"   🔗 <a href='{p.product_url}'>Ko'rish →</a>")
-        messages.append("\n".join(block))
-
+        messages.append(format_market_block(source, products))
     return messages
 
 
