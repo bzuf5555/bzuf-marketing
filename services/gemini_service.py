@@ -1,7 +1,8 @@
 """
 [OPUS] Gemini Vision Service — rasm tahlili.
-BUG FIX: sync PIL va genai calls → asyncio.to_thread (event loop bloklanmaydi)
-BUG FIX: genai.configure() faqat bir marta chaqiriladi
+- asyncio.to_thread: event loop bloklanmaydi
+- genai.configure() faqat bir marta
+- GeminiQuotaError: 429 uchun retry mexanizmi
 """
 import asyncio
 import io
@@ -17,6 +18,13 @@ import PIL.Image
 logger = logging.getLogger(__name__)
 
 _configured = False
+
+
+class GeminiQuotaError(Exception):
+    """Gemini 429 — quota limit. retry_after sekund kutish kerak."""
+    def __init__(self, retry_after: int = 65):
+        self.retry_after = retry_after
+        super().__init__(f"Gemini quota, retry in {retry_after}s")
 
 
 def _ensure_configured(api_key: str) -> None:
@@ -114,8 +122,22 @@ def _sync_analyze(image_bytes: bytes, api_key: str) -> ImageAnalysis:
 
 
 async def analyze_image(image_bytes: bytes, api_key: str) -> ImageAnalysis:
-    """Async wrapper — event loop ni bloklamaydi."""
-    analysis = await asyncio.to_thread(_sync_analyze, image_bytes, api_key)
+    """Async wrapper — 429 xatolikda GeminiQuotaError raise qiladi."""
+    try:
+        analysis = await asyncio.to_thread(_sync_analyze, image_bytes, api_key)
+    except Exception as e:
+        err_str = str(e)
+        err_type = type(e).__name__
+        if "ResourceExhausted" in err_type or "429" in err_str:
+            # Retry vaqtini error message dan ajratib olish
+            retry_after = 65
+            m = re.search(r"retry in (\d+(?:\.\d+)?)", err_str, re.IGNORECASE)
+            if m:
+                retry_after = int(float(m.group(1))) + 5
+            logger.warning("Gemini 429 — retry after %ds", retry_after)
+            raise GeminiQuotaError(retry_after) from e
+        raise
+
     logger.info(
         "Vision: %s | brand=%s | cat=%s | uz='%s' | ru='%s'",
         analysis.item_type, analysis.brand, analysis.category,

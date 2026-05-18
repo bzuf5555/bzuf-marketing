@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from telegram import Update
@@ -8,10 +9,10 @@ from database.mongodb import user_exists, increment_search_count
 from agents.vision_agent import process_image
 from agents.search_agent import search_all_markets, format_results_message, get_best_image
 from middleware.rate_limiter import rate_limiter
+from services.gemini_service import GeminiQuotaError
 
 logger = logging.getLogger(__name__)
 
-# Telegram caption limiti 1024 char — header bu limitdan oshib ketmasligi uchun
 _CAPTION_LIMIT = 900
 
 _STEP1 = (
@@ -35,9 +36,14 @@ _RATE_LIMIT_TPL = (
     "<i>Sifatli natija uchun cheklov mavjud.</i>"
 )
 
+_QUOTA_TPL = (
+    "⏳ <b>Gemini AI band</b>\n\n"
+    "So'rovlar ko'p kelganda avtomatik cheklov qo'yiladi.\n"
+    "<b>{sec} soniyadan so'ng</b> qayta urilamiz..."
+)
+
 
 async def _safe_delete(message) -> None:
-    """BUG FIX: delete xatosini jimgina o'tkazib yuboradi."""
     try:
         await message.delete()
     except Exception:
@@ -70,7 +76,23 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         gemini_api_key: str = context.bot_data["gemini_api_key"]
         config = context.bot_data["config"]
 
-        vision_result = await process_image(image_bytes, gemini_api_key)
+        # Gemini 429 bo'lsa — foydalanuvchiga xabar berib kutamiz va qayta urinamiz
+        vision_result = None
+        for attempt in range(2):
+            try:
+                vision_result = await process_image(image_bytes, gemini_api_key)
+                break
+            except GeminiQuotaError as qe:
+                if attempt == 0:
+                    await progress.edit_text(
+                        _QUOTA_TPL.format(sec=qe.retry_after),
+                        parse_mode="HTML",
+                    )
+                    logger.info("Gemini 429, waiting %ds for user %d", qe.retry_after, user.id)
+                    await asyncio.sleep(qe.retry_after)
+                    await progress.edit_text(_STEP1)
+                else:
+                    raise ValueError("Gemini quota limit — qayta urinib ko'ring") from qe
 
         await progress.edit_text(_STEP2)
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
@@ -87,7 +109,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await _safe_delete(progress)
 
-        # BUG FIX: caption > 900 char bo'lsa, rasmni captionsiz, textni alohida yuboramiz
+        # Caption > 900 char bo'lsa rasm + text alohida
         if best_image and search_results.total_found > 0:
             if len(header_text) <= _CAPTION_LIMIT:
                 try:
@@ -103,7 +125,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                         disable_web_page_preview=True,
                     )
             else:
-                # Rasm alohida, tavsif alohida
                 try:
                     await message.reply_photo(photo=best_image)
                 except Exception:
