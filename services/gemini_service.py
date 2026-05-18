@@ -76,7 +76,7 @@ def _sync_analyze(image_bytes: bytes, api_key: str) -> ImageAnalysis:
     _ensure_configured(api_key)
 
     model = genai.GenerativeModel(
-        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
         generation_config=genai.types.GenerationConfig(
             temperature=0.05,
             max_output_tokens=1024,
