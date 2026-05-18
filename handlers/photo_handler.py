@@ -94,6 +94,14 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 else:
                     raise ValueError("Gemini quota limit — qayta urinib ko'ring") from qe
 
+        # Low confidence — foydalanuvchiga ogohlantirish
+        if vision_result.low_confidence:
+            await message.reply_text(
+                "⚠️ <b>Rasm sifati past</b> — natijalar aniq bo'lmasligi mumkin.\n"
+                "<i>Yaxshiroq yorug'lik, aniq va yaqin rasm yuborsangiz natijalar yaxshiroq bo'ladi.</i>",
+                parse_mode="HTML",
+            )
+
         await progress.edit_text(_STEP2)
         await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
 

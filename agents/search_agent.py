@@ -130,13 +130,20 @@ def format_header(results: SearchResults) -> str:
 
     if a.brand:
         lines.append(f"\n🏷  Brend:   <b>{a.brand}</b>")
+    if a.model:
+        lines.append(f"📋  Model:   <b>{a.model}</b>")
     if a.color:
         lines.append(f"🎨  Rang:    {a.color}")
+    if getattr(a, 'storage', None):
+        lines.append(f"💾  Xotira:  {a.storage}")
     if a.size:
         lines.append(f"📐  O'lcham: {a.size}")
-    if a.model:
-        lines.append(f"📋  Model:   {a.model}")
     lines.append(f"✅  Holat:   {a.condition}")
+    conf = getattr(a, 'confidence', 'medium')
+    if conf == 'high':
+        lines.append(f"🎯  Aniqlik: <b>Yuqori</b>")
+    elif conf == 'low':
+        lines.append(f"⚠️  Aniqlik: Past — rasmni aniqroq yuboring")
     if a.key_features:
         lines.append(f"⚙️   {' · '.join(a.key_features[:3])}")
 
