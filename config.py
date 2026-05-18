@@ -31,5 +31,8 @@ def load_config() -> Config:
         MONGODB_URI=os.environ["MONGODB_URI"],
         RENDER_EXTERNAL_URL=os.getenv("RENDER_EXTERNAL_URL", ""),
         PORT=int(os.getenv("PORT", 8443)),
-        WEBHOOK_SECRET=os.getenv("WEBHOOK_SECRET", os.environ["BOT_TOKEN"][:20]),
+        WEBHOOK_SECRET=os.getenv(
+            "WEBHOOK_SECRET",
+            os.environ["BOT_TOKEN"].replace(":", "_").replace("-", "_")[:32],
+        ),
     )
